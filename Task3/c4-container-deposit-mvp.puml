@@ -1,0 +1,70 @@
+@startuml c4-container-deposit-mvp
+!include <C4/C4_Container>
+
+LAYOUT_TOP_DOWN()
+
+AddElementTag("new", $bgColor="#2E7D32", $fontColor="#ffffff", $borderColor="#1B5E20", $legendText="новый контейнер")
+AddElementTag("changed", $bgColor="#B85C00", $fontColor="#ffffff", $borderColor="#8A4500", $legendText="дорабатываемый контейнер / система")
+AddRelTag("existing", $lineColor="#888888", $textColor="#666666", $lineStyle=DashedLine(), $legendText="существующая интеграция (без изменений)")
+
+title Диаграмма контейнеров (C4, уровень 2). Открытие депозитов онлайн — MVP
+
+Person(client, "Клиент", "Новый или действующий клиент банка")
+Person(ccOperator, "Оператор кол-центра", "Обрабатывает заявки с сайта")
+Person(branchEmployee, "Сотрудник отделения", "Фронт-офис")
+Person(depositManager, "Менеджер бэк-офиса депозитов", "Ставки и заявки на депозиты")
+Person(creditManager, "Менеджер бэк-офиса кредитов", "Показатели кредитного риска")
+
+System(site, "Сайт банка", "PHP, React.js. Витрина депозитов и форма заявки (Ф. И. О., телефон)", $tags="changed")
+
+System_Boundary(ib, "Интернет-банк") {
+    Container(ibWeb, "Веб-приложение интернет-банка", "ASP.NET MVC 4.5, .NET Framework 4.5, платформа подрядчика", "Монолит. Аутентификация, счета, платежи. Новый раздел «Депозиты» на точках расширения, выдача JWT для вызова новых сервисов", $tags="changed")
+    ContainerDb(ibDb, "БД интернет-банка", "MS SQL Server", "Клиенты, сессии, платежи, справочники")
+    Container(apiGw, "API-шлюз", "Nginx", "Единая точка входа для новых сервисов: TLS, проверка JWT, rate limiting, балансировка между экземплярами и ЦОД", $tags="new")
+    Container(depositSvc, "Сервис депозитов", "ASP.NET Core (.NET 8), C#", "Витрина ставок и персональных ставок, приём заявок клиентов ИБ и лидов с сайта, статусы заявок. Stateless, запускается в двух ЦОД", $tags="new")
+    ContainerDb(depositDb, "БД сервиса депозитов", "MS SQL Server (Always On)", "Заявки, статусы, копия ставок, outbox исходящих событий", $tags="new")
+    ContainerDb(cache, "Кэш", "Redis", "Ставки, справочники продуктов, одноразовые СМС-коды (TTL)", $tags="new")
+    Container(otpSvc, "Сервис подтверждений", "ASP.NET Core (.NET 8), C#", "Генерация и проверка одноразовых кодов, отправка СМС через шлюз в обход ядра платформы", $tags="new")
+}
+
+System(kafka, "Шина событий", "Apache Kafka (кластер на два ЦОД). Топики: deposit.rates, deposit.personal-rates, deposit.applications, deposit.leads, deposit.application-status", $tags="new")
+
+System_Boundary(abs, "АБС") {
+    Container(absAdapter, "Интеграционный адаптер АБС", "Java 17, Spring Boot, Spring Kafka", "Читает заявки из Kafka и пишет их в staging-таблицы; публикует ставки и статусы из outbox-таблиц. Ограничивает нагрузку на БД (пул, батчи)", $tags="new")
+    ContainerDb(absDb, "БД АБС", "Oracle, PL/SQL", "Вся бизнес-логика. Новое: модуль «Ставки по депозитам», очередь онлайн-заявок, outbox- и staging-таблицы, разграничение доступа депозиты/кредиты", $tags="changed")
+    Container(absClient, "Клиент АБС", "Delphi, десктоп", "Рабочие места фронт- и бэк-офиса. Новое: формы ведения ставок, очередь онлайн-заявок, согласование спецставок", $tags="changed")
+}
+
+System(cc, "Система кол-центра", "React.js, Java Spring Boot, PostgreSQL. Новое: приём заявок с сайта из Kafka и постановка задач на обзвон", $tags="changed")
+System(smsGw, "СМС-шлюз", "Шлюз банка для отправки СМС")
+System_Ext(telecom, "Телеком-оператор", "Доставка СМС")
+
+Rel(client, site, "Смотрит ставки, оставляет заявку", "HTTPS / TLS 1.2+")
+Rel(client, ibWeb, "Работает в разделе «Депозиты»", "HTTPS / TLS 1.2+")
+Rel(site, apiGw, "GET ставок, POST заявки нового клиента", "REST/JSON, HTTPS")
+Rel(ibWeb, apiGw, "Ставки, заявка, подтверждение кода, статусы", "REST/JSON, HTTPS, JWT")
+Rel(ibWeb, ibDb, "Читает и пишет", "ADO.NET")
+Rel(ibWeb, absDb, "Платежи, текущие счета", "прямой доступ к БД", $tags="existing")
+Rel(apiGw, depositSvc, "Маршрутизирует запросы", "HTTPS")
+Rel(depositSvc, depositDb, "Заявки, статусы, ставки, outbox", "EF Core, TDS/TLS")
+Rel(depositSvc, cache, "Читает ставки и справочники", "RESP/TLS")
+Rel(depositSvc, otpSvc, "Запрос и проверка СМС-кода", "REST/JSON, mTLS")
+Rel(otpSvc, cache, "Хранит коды с TTL", "RESP/TLS")
+Rel(otpSvc, smsGw, "Отправка СМС-кода", "HTTPS")
+Rel(depositSvc, kafka, "Публикует deposit.applications и deposit.leads; читает deposit.rates, deposit.personal-rates, deposit.application-status", "Kafka, TLS")
+Rel(absAdapter, kafka, "Читает deposit.applications; публикует deposit.rates, deposit.personal-rates, deposit.application-status", "Kafka, TLS")
+Rel(absAdapter, absDb, "Пишет в staging, читает outbox", "JDBC")
+Rel(absClient, absDb, "Вызов процедур PL/SQL", "Oracle Net")
+Rel(kafka, cc, "deposit.leads — заявки с сайта", "Kafka, TLS")
+Rel(cc, absDb, "Обращение по депозиту", "существующая интеграция", $tags="existing")
+Rel(absDb, smsGw, "СМС о ставке и об открытии депозита", "существующая интеграция", $tags="existing")
+Rel(smsGw, telecom, "Отправка СМС", "SMPP/HTTPS")
+Rel(telecom, client, "СМС")
+
+Rel(ccOperator, cc, "Обрабатывает заявки с сайта")
+Rel(branchEmployee, absClient, "Идентификация клиента, открытие депозита")
+Rel(depositManager, absClient, "Ставки, обработка онлайн-заявок")
+Rel(creditManager, absClient, "Показатели риска, спецставки")
+
+SHOW_LEGEND()
+@enduml

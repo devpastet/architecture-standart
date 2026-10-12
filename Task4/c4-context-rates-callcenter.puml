@@ -1,0 +1,37 @@
+@startuml c4-context-rates-callcenter
+!include <C4/C4_Context>
+
+LAYOUT_LEFT_RIGHT()
+
+AddElementTag("new", $bgColor="#2E7D32", $fontColor="#ffffff", $borderColor="#1B5E20", $legendText="новая система")
+AddElementTag("changed", $bgColor="#B85C00", $fontColor="#ffffff", $borderColor="#8A4500", $legendText="дорабатываемая система")
+
+title Диаграмма контекста (C4, уровень 1). Передача депозитных ставок в кол-центры
+
+Person(depositManager, "Менеджер бэк-офиса депозитов", "Утверждает депозитные ставки")
+Person(creditManager, "Менеджер бэк-офиса кредитов", "Вводит показатели для расчёта ставок")
+Person(client, "Клиент", "Звонит, чтобы уточнить условия депозита")
+Person(ccOperator, "Оператор кол-центра банка", "Консультирует по актуальным ставкам")
+Person_Ext(partnerOperator, "Оператор партнёрского кол-центра", "Консультирует по скриптам и ставкам банка")
+
+System(abs, "АБС", "Мастер-система депозитных ставок (модуль «Ставки по депозитам»)", $tags="changed")
+System(kafka, "Шина событий", "Apache Kafka. Топик deposit.rates с актуальными ставками")
+System(cc, "Система кол-центра", "Платформа подрядчика. Новое: модуль ставок и виджет в карточке звонка", $tags="changed")
+System(export, "Контур выгрузки ставок", "Сервис выгрузки ставок и SFTP-сервер банка в DMZ. Формирует файлы со ставками для партнёра", $tags="new")
+System_Ext(partnerCc, "Система партнёрского кол-центра", "Внешняя система. Принимает ставки только в виде файлов")
+System(ibSite, "Интернет-банк и сайт", "Получают те же события ставок (решение ADR-001)")
+
+Rel(creditManager, abs, "Вводит показатели кредитного риска")
+Rel(depositManager, abs, "Утверждает ставки на день")
+Rel(abs, kafka, "Публикует утверждённые ставки", "Kafka, TLS")
+Rel(kafka, cc, "Актуальные ставки", "Kafka, TLS")
+Rel(kafka, export, "Актуальные ставки", "Kafka, TLS")
+Rel(kafka, ibSite, "Актуальные ставки", "Kafka, TLS")
+Rel(partnerCc, export, "Забирает файл ставок по расписанию", "SFTP, SSH-ключи")
+Rel(ccOperator, cc, "Смотрит ставки в карточке звонка")
+Rel(partnerOperator, partnerCc, "Смотрит ставки и скрипт")
+Rel(client, ccOperator, "Звонок", "телефон")
+Rel(client, partnerOperator, "Звонок при перегрузке кол-центра банка", "телефон")
+
+SHOW_LEGEND()
+@enduml
