@@ -1,0 +1,71 @@
+@startuml c4-component-rates-callcenter
+!include <C4/C4_Component>
+
+LAYOUT_TOP_DOWN()
+
+AddElementTag("new", $bgColor="#2E7D32", $fontColor="#ffffff", $borderColor="#1B5E20", $legendText="новый компонент / контейнер")
+AddElementTag("changed", $bgColor="#B85C00", $fontColor="#ffffff", $borderColor="#8A4500", $legendText="компонент из ADR-001 (переиспользуется)")
+
+title Диаграмма компонентов (C4, уровень 3). Передача депозитных ставок в кол-центры
+
+Person(backOffice, "Менеджеры бэк-офиса", "Депозиты и кредиты")
+Person(ccOperator, "Оператор кол-центра банка")
+Person_Ext(partnerOperator, "Оператор партнёрского кол-центра")
+
+Boundary(abs, "АБС") {
+    Component(ratesForms, "Формы модуля ставок", "Delphi", "Ввод показателей, расчёт и утверждение ставок на день", $tags="changed")
+    Component(ratesPkg, "Пакет RATES_PKG", "Oracle PL/SQL", "Расчёт ставок от ключевой ставки и показателей риска, утверждение, версионирование", $tags="changed")
+    ComponentDb(ratesTables, "Таблицы ставок и RATES_OUTBOX", "Oracle", "Утверждённые ставки с периодом действия; запись в outbox в одной транзакции с утверждением", $tags="changed")
+    Component(outboxPublisher, "OutboxPublisher", "Java, Spring Boot (адаптер АБС)", "Читает RATES_OUTBOX пачками и публикует события в Kafka", $tags="changed")
+}
+
+ContainerQueue(ratesTopic, "Топик deposit.rates", "Apache Kafka, compacted", "Ключ: продукт + срок + валюта. Значение: ставка, период действия, версия")
+
+Boundary(cc, "Система кол-центра (платформа подрядчика)") {
+    Component(ccListener, "RatesEventListener", "Java, Spring Kafka", "Читает события ставок, идемпотентно обновляет витрину", $tags="new")
+    Component(ccRepo, "RatesRepository", "Spring Data JPA", "Доступ к локальной витрине ставок", $tags="new")
+    ComponentDb(ccDb, "Витрина ставок", "PostgreSQL", "Актуальные ставки и время последнего обновления", $tags="new")
+    Component(ccApi, "Rates REST API", "Spring Web", "Отдаёт актуальные ставки и признак их свежести", $tags="new")
+    Component(ccWidget, "Виджет «Ставки по депозитам»", "React.js", "Таблица ставок в карточке звонка, предупреждение об устаревших данных", $tags="new")
+}
+
+Boundary(export, "Сервис выгрузки ставок") {
+    Component(exListener, "RatesEventListener", "Java, Spring Kafka", "Читает топик с начала, получает полный актуальный срез", $tags="new")
+    Component(snapshot, "SnapshotBuilder", "Java", "Собирает срез ставок в памяти, отбрасывает неактуальные версии", $tags="new")
+    Component(scheduler, "ExportScheduler", "Spring Scheduler", "Запускает выгрузку ежедневно и при изменении ставок, повторяет при сбое", $tags="new")
+    Component(fileGen, "FileGenerator", "Java, Apache POI", "Формирует CSV и XLSX: ставки, период действия, версия, время формирования", $tags="new")
+    Component(signer, "FileSigner", "Java", "Считает SHA-256 и формирует файл контрольной суммы", $tags="new")
+    Component(sftpPublisher, "SftpPublisher", "Java, SSHJ", "Атомарно выкладывает файлы (tmp + rename), чистит старые версии", $tags="new")
+    Component(audit, "ExportAudit", "Micrometer, журнал", "Фиксирует выгрузки и факт скачивания, поднимает алерт при просрочке", $tags="new")
+}
+
+Container(sftp, "SFTP-сервер банка", "OpenSSH, DMZ", "Каталог партнёра только на чтение, доступ по SSH-ключу и списку IP", $tags="new")
+System_Ext(partnerCc, "Система партнёрского кол-центра", "Внешняя система")
+
+Rel(backOffice, ratesForms, "Вводят показатели, утверждают ставки")
+Rel(ratesForms, ratesPkg, "Вызывает процедуры", "Oracle Net")
+Rel(ratesPkg, ratesTables, "Пишет ставки и событие")
+Rel(outboxPublisher, ratesTables, "Читает outbox", "JDBC")
+Rel(outboxPublisher, ratesTopic, "Публикует RateChanged", "Kafka, TLS")
+
+Rel(ratesTopic, ccListener, "RateChanged", "Kafka, TLS")
+Rel(ccListener, ccRepo, "Сохраняет ставку")
+Rel(ccRepo, ccDb, "Читает и пишет", "JDBC")
+Rel(ccApi, ccRepo, "Читает ставки")
+Rel(ccWidget, ccApi, "GET /rates/deposits", "REST/JSON, HTTPS")
+Rel(ccOperator, ccWidget, "Смотрит ставки во время звонка")
+
+Rel(ratesTopic, exListener, "RateChanged", "Kafka, TLS")
+Rel(exListener, snapshot, "Передаёт события")
+Rel(scheduler, snapshot, "Запрашивает срез")
+Rel(snapshot, fileGen, "Актуальный срез ставок")
+Rel(fileGen, signer, "Файлы CSV и XLSX")
+Rel(signer, sftpPublisher, "Файлы и контрольная сумма")
+Rel(sftpPublisher, sftp, "Выкладывает файлы", "SFTP")
+Rel(sftpPublisher, audit, "Результат выгрузки")
+Rel(audit, sftp, "Проверяет журнал скачиваний", "SSH")
+Rel(partnerCc, sftp, "Скачивает файл по расписанию", "SFTP, SSH-ключ")
+Rel(partnerOperator, partnerCc, "Смотрит ставки и скрипт")
+
+SHOW_LEGEND()
+@enduml
